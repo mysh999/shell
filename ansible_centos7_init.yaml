@@ -1,0 +1,136 @@
+---
+- hosts: host1
+  vars:
+  remote_user: root
+  gather_facts: false
+
+  tasks:
+    - name: disable firealld
+      service: name=firewalld state=stopped enabled=no
+    
+    - name: disable selinux
+      lineinfile:
+        dest: /etc/selinux/config
+        regexp: "^SELINUX="
+        line: "SELINUX=disabled"
+    
+    - name: copy time zone
+      copy: src=/usr/share/zoneinfo/Asia/Shanghai dest=/etc/localtime
+    
+    - name: back old yum
+      shell: |
+          mkdir -p /etc/yum.repos.d/default  
+          mv /etc/yum.repos.d/*.repo /etc/yum.repos.d/default/
+    
+    - name: add new yum
+      copy: src=/etc/yum.repos.d/ dest=/etc/yum.repos.d/
+    
+    - name: update yum
+      shell: yum repolist
+    
+    - name: yum install package
+      yum: name={{ item }}
+      with_items:
+        - net-tools
+        - curl
+        - iotop
+        - rsync
+        - tree
+        - strace
+        - gcc
+        - wget
+        - lrzsz
+        - ntp
+        - libselinux-python
+        - python-pip
+    
+    - name: ntpdate to sync time
+      shell: |
+          ntpdate ntp1.aliyun.com
+          hwclock -w
+
+    - name: remove lines in ntp.conf
+      lineinfile:
+        path: /etc/ntp.conf
+        regexp: '^server'
+        state: absent
+      tags:
+        - remove_ntpconf
+
+    - name: add ntp servers to ntp.conf
+      lineinfile:
+        path: /etc/ntp.conf
+        regexp: '^server'
+        state: present
+        line: |+
+          server ntp-sz.ch1.la prefer
+          server 0.cn.pool.ntp.org
+          server ntp1.aliyun.com iburst minpoll 4 maxpoll 10
+          restrict ntp1.aliyun.com nomodify notrap nopeer noquery
+          server ntp1.cloud.aliyuncs.com iburst minpoll 4 maxpoll 10
+          restrict ntp1.cloud.aliyuncs.com nomodify notrap nopeer noquery
+          server 127.127.1.0 iburst local clock
+      tags:
+        - add_new_ntpconf        
+
+    - name: stop ntpd service
+      systemd:
+        name: ntpd
+        daemon_reload: yes
+        state: stopped
+      tags:
+        - stop__ntpd
+
+    - name: enable and start ntpd
+      systemd:
+        name: ntpd
+        daemon_reload: yes
+        state: started
+        enabled: yes
+      tags:
+        - enable_start_ntpd        
+
+    - name: ulimit change
+      shell: ulimit -HSn 65535;ulimit -u 81920
+
+    - name: change limits.conf nofile
+      lineinfile:
+        dest: /etc/security/limits.conf
+        regexp: '\* - nofile [0-9]+'
+        line: '* - nofile 65535'
+
+    - name: change limits nproc
+      lineinfile:
+        dest: /etc/security/limits.conf
+        regexp: '\* - nproc [0-9]+'
+        line: '* - nproc 81920'
+
+    - name: create directory
+      file: path={{ item }} state=directory
+      with_items:
+        - /data
+        - /logs
+
+    - name: install docker
+      yum: name=docker-ce state=present
+      async: 0
+      poll: 10
+
+    - service: name=docker enabled=yes state=started
+
+    - name: install  docker-compose
+      yum: name=docker-compose state=present
+      async: 0
+      poll: 10
+
+    - name: create .ssh
+      file: path=/root/.ssh owner=root group=root mode=755 state=directory
+
+    - name: Add keys
+      copy: src=/root/.ssh/authorized_keys dest=/root/.ssh/authorized_keys owner=root group=root mode=644
+
+    - name: init user 
+      user: name="{{ item }}" append=yes generate_ssh_key=yes
+      with_items:
+         - ops
+         - dev
